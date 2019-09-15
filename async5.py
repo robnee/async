@@ -2,10 +2,8 @@
 simple pubsub system
 """
 
-import time
+import sys
 import asyncio
-import random
-import logging
 
     
 class PubSub:
@@ -43,6 +41,7 @@ class PubSub:
             for q in s:
                 await q.put(None)
     
+
 def main():
     try:
         loop = asyncio.get_event_loop()
@@ -76,13 +75,15 @@ def main():
         listen('pig'),
         mon(),
     }
-    x, y = loop.run_until_complete(asyncio.wait(aws, timeout=15))
+    loop.run_until_complete(asyncio.wait(aws, timeout=15))
 
     print('main: done')
 
 
 def patch():
-    asyncio.create_task = asyncio.ensure_future
+    version = sys.version_info.major * 10 + sys.version_info.minor
+    if version < 37:
+        asyncio.create_task = asyncio.ensure_future
 
 
 if __name__ == '__main__':

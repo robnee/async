@@ -20,6 +20,7 @@ def run(futures, timeout=None):
     for task in pending:
         task.cancel()
 
+
 run([
     countdown("A", 3),
     countdown("B", 5),

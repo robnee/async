@@ -44,7 +44,7 @@ class Crazy:
 
     async def listen(self):
         try:
-            while(True):
+            while True:
                 c, t, msg = await self.queue.get()
                 
                 print(f'{(time.time() - t) * 1000:.3f} ms {msg}')
