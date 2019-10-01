@@ -7,13 +7,36 @@ import sys
 import asyncio
 import datetime
 import time
+from collections import namedtuple
+import logging
 
 
-def get_timestamp():
+Message = namedtuple('Message', 'key, value')
+
+
+def ts():
     return time.time()
-    # .strftime("%Y%m%d %H:%M:%S")
 
-    
+
+class RefexPattern():
+    def __init__(self, pattern):
+        self.regex = re.compile(pattern)
+
+    def match(self, subject):
+        return self.regex.fullmatch(subject)
+
+                    
+class DotPattern():
+    def __init__(self, pattern):
+        self.pattern = pattern.upper()
+        
+    def match(self, subject):
+        if self.pattern == subject.upper() or self.pattern in ('', '.'):
+            return True
+
+        prefix = self.pattern + '' if self.pattern[-1] == '.' else '.'
+        return subject.upper().startswith(prefix)         
+
 class MessageBus:
     def __init__(self):
         self.address = None
@@ -28,21 +51,22 @@ class MessageBus:
     async def send(self, k, v):
         self.channels[k] = v
         for pattern, q in self.listeners:
-            if pattern.fullmatch(k):
-                result = await q.put((get_timestamp(), k, v))
+            if pattern.match(k):
+                result = await q.put(Message(k, v))
 
     async def listen(self, pattern):
-        try:
-            p = re.compile(pattern)
+        try: 
+            p = DotPattern(pattern)
             q = asyncio.Queue()
 
             self.listeners.add((p, q))
 
             # yield current values
             for k, v in self.channels.items():
-                if p.fullmatch(k):
-                    yield get_timestamp(), k, v
-                
+                if p.match(k):
+                    yield Message(k, v)
+
+            # yield the messages as they come through
             while True:
                 msg = await q.get()
                 if not msg:
@@ -55,13 +79,13 @@ class MessageBus:
 
     async def status(self):
         return {
-            "qlen": len(self.listeners),
+            "iisteners": len(self.listeners),
             "channels": list(self.channels.keys()),
+            "timestamp": ts(),
         }
         
     async def close(self):
         for p, q in self.listeners:
-            print('closing:', p)
             await q.put(None)
     
 
@@ -96,15 +120,18 @@ def main():
         await asyncio.sleep(1)
         print('mon: done')
         
+        return True
+        
     aws = {
-        talk(('junk', 'pig')),
-        listen('junk'),
-        listen('pig'),
+        talk(('cat.dog', 'cat.pig')),
+        listen('.'),
+        listen('cat.'),
+        listen('cat.pig'),
         mon(),
     }
     done, pending = loop.run_until_complete(asyncio.wait(aws, timeout=15))
 
-    print('done:')
+    print('run done:')
     for t in done:
         if t.exception():
             print('exception:', t, t.exception())
@@ -120,6 +147,11 @@ def patch():
         asyncio.create_task = asyncio.ensure_future
 
 
+def test():
+    m = Message('a', 1, ts())
+    print(m)
+    
+    
 if __name__ == '__main__':
     patch()
     main()
