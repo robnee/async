@@ -5,20 +5,23 @@ simple pubsub system
 import re
 import sys
 import asyncio
-import datetime
 import time
 from collections import namedtuple
 import logging
+import warnings
 
 
 Message = namedtuple('Message', 'key, value')
 
+
+logger = logging.getLogger()
 
 def ts():
     return time.time()
 
 
 class RefexPattern():
+    """ regex patterns """
     def __init__(self, pattern):
         self.regex = re.compile(pattern)
 
@@ -27,6 +30,8 @@ class RefexPattern():
 
                     
 class DotPattern():
+    """ dot-separated path-style patterns """
+    
     def __init__(self, pattern):
         self.pattern = pattern.upper()
         
@@ -37,32 +42,52 @@ class DotPattern():
         prefix = self.pattern + '' if self.pattern[-1] == '.' else '.'
         return subject.upper().startswith(prefix)         
 
+
 class MessageBus:
     def __init__(self):
-        self.address = None
-        self.channels = {}
+        self._channels = {}
+
+    def set_channel(self, k, v):
+        self._channels[k] = v
+
+    def get_channels(self):
+        return self._channels.items()
+
+
+class BasicMessageBus(MessageBus):
+    """ Basic MessageBus implementation """
+    def __init__(self):
+        super().__init__()
+        self.conn = None
         self.listeners = set()
 
     async def connect(self, address=None):
-        self.address = address
-        
-        return self
+        self.conn = self
+        logger.info(f'connected ({address})')
 
     async def send(self, k, v):
-        self.channels[k] = v
+        if not self.conn:
+            raise RuntimeError('not connected')
+
+        if k.endswith('.'):
+            raise ValueError("trailing '.' in key")
+        self.set_channel(k, v)
         for pattern, q in self.listeners:
             if pattern.match(k):
-                result = await q.put(Message(k, v))
+                await q.put(Message(k, v))
 
     async def listen(self, pattern):
-        try: 
+        if not self.conn:
+            raise RuntimeError('not connected')
+            
+        try:
             p = DotPattern(pattern)
             q = asyncio.Queue()
 
             self.listeners.add((p, q))
 
             # yield current values
-            for k, v in self.channels.items():
+            for k, v in self.get_channels():
                 if p.match(k):
                     yield Message(k, v)
 
@@ -76,27 +101,30 @@ class MessageBus:
             raise
         finally:
             self.listeners.remove((p, q))
-
-    async def status(self):
-        return {
-            "iisteners": len(self.listeners),
-            "channels": list(self.channels.keys()),
-            "timestamp": ts(),
-        }
         
+    async def status(self):
+        if self.conn:
+            return {
+                "status": "connected",
+                "iisteners": len(self.listeners),
+                "channels": list(self.get_channels()),
+                "timestamp": ts(),
+            }
+        else:
+            return {
+                "status": "disconnected",
+            }
+
     async def close(self):
+        self.conn = None
         for p, q in self.listeners:
             await q.put(None)
+        logger.info(f'connection closed')
     
 
-def main():
-    try:
-        loop = asyncio.get_event_loop()
-    except:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    ps = MessageBus()
+async def main():
+    ps = BasicMessageBus()
+    await ps.connect()
 
     async def talk(keys):
         for n in range(5):
@@ -129,7 +157,7 @@ def main():
         listen('cat.pig'),
         mon(),
     }
-    done, pending = loop.run_until_complete(asyncio.wait(aws, timeout=15))
+    done, pending = await asyncio.wait(aws, timeout=15)
 
     print('run done:')
     for t in done:
@@ -142,9 +170,28 @@ def main():
 
 
 def patch():
+    def run(task, debug=False):
+        try:
+            loop = asyncio.get_event_loop()
+        except:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        if debug:
+            loop.set_debug(True)
+            logging.getLogger('asyncio').setLevel(logging.DEBUG)
+            warnings.filterwarnings('always')
+        else:
+            loop.set_debug(False)
+            logging.getLogger('asyncio').setLevel(logging.WARNING)
+            warnings.filterwarnings('default')
+            
+        return loop.run_until_complete(task)
+        
     version = sys.version_info.major * 10 + sys.version_info.minor
     if version < 37:
         asyncio.create_task = asyncio.ensure_future
+        asyncio.run = run
 
 
 def test():
@@ -154,5 +201,5 @@ def test():
     
 if __name__ == '__main__':
     patch()
-    main()
-
+    asyncio.run(main(), debug=True)
+    
