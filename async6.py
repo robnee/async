@@ -2,6 +2,7 @@
 simple pubsub system
 """
 
+import os
 import re
 import sys
 import asyncio
@@ -9,12 +10,15 @@ import time
 from collections import namedtuple
 import logging
 import warnings
+import aioredis
+import datetime
+from sshtunnel import SSHTunnelForwarder
 
 
 Message = namedtuple('Message', 'key, value')
 
-
 logger = logging.getLogger()
+
 
 def ts():
     return time.time()
@@ -40,7 +44,7 @@ class DotPattern():
             return True
 
         prefix = self.pattern + '' if self.pattern[-1] == '.' else '.'
-        return subject.upper().startswith(prefix)         
+        return subject.upper().startswith(prefix)
 
 
 class MessageBus:
@@ -56,6 +60,7 @@ class MessageBus:
 
 class BasicMessageBus(MessageBus):
     """ Basic MessageBus implementation """
+
     def __init__(self):
         super().__init__()
         self.conn = None
@@ -120,16 +125,18 @@ class BasicMessageBus(MessageBus):
         for p, q in self.listeners:
             await q.put(None)
         logger.info(f'connection closed')
-    
+
 
 async def main():
+    """ main synchronous entry point """
+
     ps = BasicMessageBus()
     await ps.connect()
 
     async def talk(keys):
         for n in range(5):
             for k in keys:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.35)
                 await ps.send(k, n)
                 
         await ps.close()
@@ -140,43 +147,83 @@ async def main():
         async for x in ps.listen(k):
             print(f'listen({k}):', x)
         print(f'listen {k}: done')
-        
+
     async def mon():
-        await asyncio.sleep(5)
-        s = await ps.status()
-        print("mon status:", s)
-        await asyncio.sleep(1)
+        for _ in range(5):
+            await asyncio.sleep(1)
+            s = await ps.status()
+            print("mon status:", s)
+
         print('mon: done')
         
         return True
-        
+
+    async def bridge(pattern, bus):
+        tunnel_config = {
+            'ssh_address_or_host': ('robnee.com', 22),
+            'remote_bind_address': ('127.0.0.1', 6379),
+            'local_bind_address': ('127.0.0.1', ),
+            'ssh_username': "rnee",
+            'ssh_pkey': os.path.expanduser(r'~/.ssh/id_rsa'),
+        }
+    
+        with SSHTunnelForwarder(**tunnel_config) as tunnel:
+            address = tunnel.local_bind_address
+            print("redis connecting", address)
+            aredis = await aioredis.create_redis(address, encoding='utf-8')
+    
+            print("redis connected", aredis.address)
+
+            try:
+                chan, = await aredis.psubscribe(pattern)
+                while await chan.wait_message():
+                    k, v = await chan.get(encoding='utf-8')
+                    await bus.send(k.decode(), v)
+    
+                print("watch: done")
+            except asyncio.CancelledError as e:
+                print('watch cancelled:', pattern)
+            except Exception as e:
+                print("exception:", type(e), e)
+    
+        print('watch done:', pattern)  
+            
     aws = {
-        talk(('cat.dog', 'cat.pig')),
+        talk(('cat.dog', 'cat.pig', 'cow.emu')),
         listen('.'),
         listen('cat.'),
         listen('cat.pig'),
+        bridge('cat.*', ps),
         mon(),
     }
     done, pending = await asyncio.wait(aws, timeout=15)
 
-    print('run done:')
+    print('run done:', len(done), 'pending:', len(pending))
+    for t in pending:
+        print('cancelling:')
+        t.cancel()
+        #result = await t
+        #print('cancel:', result)
+    
     for t in done:
         if t.exception():
             print('exception:', t, t.exception())
         else:
             print('result:', t.result())
-
+    
     print('main: done')
 
 
 def patch():
+    """ monkey patch some Python 3.7 stuff into earlier versions """
+
     def run(task, debug=False):
         try:
             loop = asyncio.get_event_loop()
         except:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
+            
         if debug:
             loop.set_debug(True)
             logging.getLogger('asyncio').setLevel(logging.DEBUG)
@@ -190,16 +237,11 @@ def patch():
         
     version = sys.version_info.major * 10 + sys.version_info.minor
     if version < 37:
+        asyncio.get_running_loop = get_event_loop
         asyncio.create_task = asyncio.ensure_future
         asyncio.run = run
 
 
-def test():
-    m = Message('a', 1, ts())
-    print(m)
-    
-    
 if __name__ == '__main__':
     patch()
     asyncio.run(main(), debug=True)
-    
