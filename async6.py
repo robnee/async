@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 """
 simple pubsub system
 """
@@ -11,7 +13,6 @@ from collections import namedtuple
 import logging
 import warnings
 import aioredis
-import datetime
 from sshtunnel import SSHTunnelForwarder
 
 
@@ -32,13 +33,13 @@ class RefexPattern():
     def match(self, subject):
         return self.regex.fullmatch(subject)
 
-                    
+
 class DotPattern():
     """ dot-separated path-style patterns """
-    
+
     def __init__(self, pattern):
         self.pattern = pattern.upper()
-        
+
     def match(self, subject):
         if self.pattern == subject.upper() or self.pattern in ('', '.'):
             return True
@@ -84,7 +85,7 @@ class BasicMessageBus(MessageBus):
     async def listen(self, pattern):
         if not self.conn:
             raise RuntimeError('not connected')
-            
+
         try:
             p = DotPattern(pattern)
             q = asyncio.Queue()
@@ -106,7 +107,7 @@ class BasicMessageBus(MessageBus):
             raise
         finally:
             self.listeners.remove((p, q))
-        
+
     async def status(self):
         if self.conn:
             return {
@@ -138,10 +139,10 @@ async def main():
             for k in keys:
                 await asyncio.sleep(0.35)
                 await ps.send(k, n)
-                
+
         await ps.close()
         print('talk: done')
-        
+
     async def listen(k):
         await asyncio.sleep(1.5)
         async for x in ps.listen(k):
@@ -155,7 +156,7 @@ async def main():
             print("mon status:", s)
 
         print('mon: done')
-        
+
         return True
 
     async def bridge(pattern, bus):
@@ -166,12 +167,12 @@ async def main():
             'ssh_username': "rnee",
             'ssh_pkey': os.path.expanduser(r'~/.ssh/id_rsa'),
         }
-    
+
         with SSHTunnelForwarder(**tunnel_config) as tunnel:
             address = tunnel.local_bind_address
             print("redis connecting", address)
             aredis = await aioredis.create_redis(address, encoding='utf-8')
-    
+
             print("redis connected", aredis.address)
 
             try:
@@ -179,15 +180,20 @@ async def main():
                 while await chan.wait_message():
                     k, v = await chan.get(encoding='utf-8')
                     await bus.send(k.decode(), v)
-    
+
                 print("watch: done")
-            except asyncio.CancelledError as e:
+            except asyncio.CancelledError:
                 print('watch cancelled:', pattern)
             except Exception as e:
                 print("exception:", type(e), e)
-    
-        print('watch done:', pattern)  
-            
+            finally:
+                print("watch finally")
+
+                aredis.close()
+                await aredis.wait_closed()
+
+        print('watch done:', pattern)
+
     aws = {
         talk(('cat.dog', 'cat.pig', 'cow.emu')),
         listen('.'),
@@ -202,15 +208,15 @@ async def main():
     for t in pending:
         print('cancelling:')
         t.cancel()
-        #result = await t
-        #print('cancel:', result)
-    
+        # result = await t
+        # print('cancel:', result)
+
     for t in done:
         if t.exception():
             print('exception:', t, t.exception())
         else:
             print('result:', t.result())
-    
+
     print('main: done')
 
 
@@ -223,7 +229,7 @@ def patch():
         except:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+
         if debug:
             loop.set_debug(True)
             logging.getLogger('asyncio').setLevel(logging.DEBUG)
@@ -232,12 +238,13 @@ def patch():
             loop.set_debug(False)
             logging.getLogger('asyncio').setLevel(logging.WARNING)
             warnings.filterwarnings('default')
-            
+
+
         return loop.run_until_complete(task)
-        
+
     version = sys.version_info.major * 10 + sys.version_info.minor
     if version < 37:
-        asyncio.get_running_loop = get_event_loop
+        asyncio.get_running_loop = asyncio.get_event_loop
         asyncio.create_task = asyncio.ensure_future
         asyncio.run = run
 
