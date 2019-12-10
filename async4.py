@@ -8,6 +8,8 @@ import time
 import asyncio
 import random
 
+import patch
+
 
 class Crazy:
     def __init__(self, loop):
@@ -75,10 +77,6 @@ def main():
     c.run()
 
 
-def patch():
-    asyncio.create_task = asyncio.ensure_future
-
-
 if __name__ == '__main__':
-    patch()
+    patch.patch()
     main()

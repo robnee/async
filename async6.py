@@ -6,14 +6,14 @@ simple pubsub system
 
 import os
 import re
-import sys
-import asyncio
 import time
-from collections import namedtuple
 import logging
-import warnings
+import asyncio
 import aioredis
+from collections import namedtuple
 from sshtunnel import SSHTunnelForwarder
+
+import patch
 
 
 Message = namedtuple("Message", "key, value")
@@ -25,7 +25,7 @@ def ts():
     return time.time()
 
 
-class RefexPattern:
+class RegexPattern:
     """ regex patterns """
 
     def __init__(self, pattern):
@@ -219,34 +219,7 @@ async def main():
     print("main: done")
 
 
-def patch():
-    """ monkey patch some Python 3.7 stuff into earlier versions """
-
-    def run(task, debug=False):
-        try:
-            loop = asyncio.get_event_loop()
-        except:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        if debug:
-            loop.set_debug(True)
-            logging.getLogger("asyncio").setLevel(logging.DEBUG)
-            warnings.filterwarnings("always")
-        else:
-            loop.set_debug(False)
-            logging.getLogger("asyncio").setLevel(logging.WARNING)
-            warnings.filterwarnings("default")
-
-        return loop.run_until_complete(task)
-
-    version = sys.version_info.major * 10 + sys.version_info.minor
-    if version < 37:
-        asyncio.get_running_loop = asyncio.get_event_loop
-        asyncio.create_task = asyncio.ensure_future
-        asyncio.run = run
-
-
 if __name__ == "__main__":
-    patch()
+    patch.patch()
     asyncio.run(main(), debug=True)
+    print("all: done")

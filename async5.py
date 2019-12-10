@@ -4,8 +4,9 @@
 simple pubsub system
 """
 
-import sys
 import asyncio
+
+import patch
 
 
 class PubSub:
@@ -82,12 +83,6 @@ def main():
     print('main: done')
 
 
-def patch():
-    version = sys.version_info.major * 10 + sys.version_info.minor
-    if version < 37:
-        asyncio.create_task = asyncio.ensure_future
-
-
 if __name__ == '__main__':
-    patch()
+    patch.patch()
     main()
