@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 import asyncio
 
 # Borrowed from http://curio.readthedocs.org/en/latest/tutorial.html.
@@ -9,6 +11,7 @@ def countdown(number, n):
         print('T-minus', n, '({})'.format(number))
         yield from asyncio.sleep(1)
         n -= 1
+
 
 loop = asyncio.get_event_loop()
 tasks = [

@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 import time
 import asyncio
 
@@ -16,7 +18,7 @@ def run(futures, timeout=None):
     loop = asyncio.get_event_loop()
 
     done, pending = loop.run_until_complete(asyncio.wait(list(futures), timeout=timeout))
-    
+
     for task in pending:
         task.cancel()
 

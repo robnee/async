@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 """
 simple pubsub system
 """
@@ -11,7 +13,6 @@ from collections import namedtuple
 import logging
 import warnings
 import aioredis
-import datetime
 from sshtunnel import SSHTunnelForwarder
 
 
@@ -180,10 +181,15 @@ async def main():
                     await bus.send(k.decode(), v)
 
                 print("watch: done")
-            except asyncio.CancelledError as e:
+            except asyncio.CancelledError:
                 print("watch cancelled:", pattern)
             except Exception as e:
                 print("exception:", type(e), e)
+            finally:
+                print("watch finally")
+
+                aredis.close()
+                await aredis.wait_closed()
 
         print("watch done:", pattern)
 
@@ -236,7 +242,7 @@ def patch():
 
     version = sys.version_info.major * 10 + sys.version_info.minor
     if version < 37:
-        asyncio.get_running_loop = get_event_loop
+        asyncio.get_running_loop = asyncio.get_event_loop
         asyncio.create_task = asyncio.ensure_future
         asyncio.run = run
 
