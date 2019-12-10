@@ -15,7 +15,7 @@ import datetime
 from sshtunnel import SSHTunnelForwarder
 
 
-Message = namedtuple('Message', 'key, value')
+Message = namedtuple("Message", "key, value")
 
 logger = logging.getLogger()
 
@@ -24,26 +24,27 @@ def ts():
     return time.time()
 
 
-class RefexPattern():
+class RefexPattern:
     """ regex patterns """
+
     def __init__(self, pattern):
         self.regex = re.compile(pattern)
 
     def match(self, subject):
         return self.regex.fullmatch(subject)
 
-                    
-class DotPattern():
+
+class DotPattern:
     """ dot-separated path-style patterns """
-    
+
     def __init__(self, pattern):
         self.pattern = pattern.upper()
-        
+
     def match(self, subject):
-        if self.pattern == subject.upper() or self.pattern in ('', '.'):
+        if self.pattern == subject.upper() or self.pattern in ("", "."):
             return True
 
-        prefix = self.pattern + '' if self.pattern[-1] == '.' else '.'
+        prefix = self.pattern + "" if self.pattern[-1] == "." else "."
         return subject.upper().startswith(prefix)
 
 
@@ -68,13 +69,13 @@ class BasicMessageBus(MessageBus):
 
     async def connect(self, address=None):
         self.conn = self
-        logger.info(f'connected ({address})')
+        logger.info(f"connected ({address})")
 
     async def send(self, k, v):
         if not self.conn:
-            raise RuntimeError('not connected')
+            raise RuntimeError("not connected")
 
-        if k.endswith('.'):
+        if k.endswith("."):
             raise ValueError("trailing '.' in key")
         self.set_channel(k, v)
         for pattern, q in self.listeners:
@@ -83,8 +84,8 @@ class BasicMessageBus(MessageBus):
 
     async def listen(self, pattern):
         if not self.conn:
-            raise RuntimeError('not connected')
-            
+            raise RuntimeError("not connected")
+
         try:
             p = DotPattern(pattern)
             q = asyncio.Queue()
@@ -106,7 +107,7 @@ class BasicMessageBus(MessageBus):
             raise
         finally:
             self.listeners.remove((p, q))
-        
+
     async def status(self):
         if self.conn:
             return {
@@ -116,15 +117,13 @@ class BasicMessageBus(MessageBus):
                 "timestamp": ts(),
             }
         else:
-            return {
-                "status": "disconnected",
-            }
+            return {"status": "disconnected"}
 
     async def close(self):
         self.conn = None
         for p, q in self.listeners:
             await q.put(None)
-        logger.info(f'connection closed')
+        logger.info(f"connection closed")
 
 
 async def main():
@@ -138,15 +137,15 @@ async def main():
             for k in keys:
                 await asyncio.sleep(0.35)
                 await ps.send(k, n)
-                
+
         await ps.close()
-        print('talk: done')
-        
+        print("talk: done")
+
     async def listen(k):
         await asyncio.sleep(1.5)
         async for x in ps.listen(k):
-            print(f'listen({k}):', x)
-        print(f'listen {k}: done')
+            print(f"listen({k}):", x)
+        print(f"listen {k}: done")
 
     async def mon():
         for _ in range(5):
@@ -154,64 +153,64 @@ async def main():
             s = await ps.status()
             print("mon status:", s)
 
-        print('mon: done')
-        
+        print("mon: done")
+
         return True
 
     async def bridge(pattern, bus):
         tunnel_config = {
-            'ssh_address_or_host': ('robnee.com', 22),
-            'remote_bind_address': ('127.0.0.1', 6379),
-            'local_bind_address': ('127.0.0.1', ),
-            'ssh_username': "rnee",
-            'ssh_pkey': os.path.expanduser(r'~/.ssh/id_rsa'),
+            "ssh_address_or_host": ("robnee.com", 22),
+            "remote_bind_address": ("127.0.0.1", 6379),
+            "local_bind_address": ("127.0.0.1",),
+            "ssh_username": "rnee",
+            "ssh_pkey": os.path.expanduser(r"~/.ssh/id_rsa"),
         }
-    
+
         with SSHTunnelForwarder(**tunnel_config) as tunnel:
             address = tunnel.local_bind_address
             print("redis connecting", address)
-            aredis = await aioredis.create_redis(address, encoding='utf-8')
-    
+            aredis = await aioredis.create_redis(address, encoding="utf-8")
+
             print("redis connected", aredis.address)
 
             try:
                 chan, = await aredis.psubscribe(pattern)
                 while await chan.wait_message():
-                    k, v = await chan.get(encoding='utf-8')
+                    k, v = await chan.get(encoding="utf-8")
                     await bus.send(k.decode(), v)
-    
+
                 print("watch: done")
             except asyncio.CancelledError as e:
-                print('watch cancelled:', pattern)
+                print("watch cancelled:", pattern)
             except Exception as e:
                 print("exception:", type(e), e)
-    
-        print('watch done:', pattern)  
-            
+
+        print("watch done:", pattern)
+
     aws = {
-        talk(('cat.dog', 'cat.pig', 'cow.emu')),
-        listen('.'),
-        listen('cat.'),
-        listen('cat.pig'),
-        bridge('cat.*', ps),
+        talk(("cat.dog", "cat.pig", "cow.emu")),
+        listen("."),
+        listen("cat."),
+        listen("cat.pig"),
+        bridge("cat.*", ps),
         mon(),
     }
     done, pending = await asyncio.wait(aws, timeout=15)
 
-    print('run done:', len(done), 'pending:', len(pending))
+    print("run done:", len(done), "pending:", len(pending))
     for t in pending:
-        print('cancelling:')
+        print("cancelling:")
         t.cancel()
-        #result = await t
-        #print('cancel:', result)
-    
+        # result = await t
+        # print('cancel:', result)
+
     for t in done:
         if t.exception():
-            print('exception:', t, t.exception())
+            print("exception:", t, t.exception())
         else:
-            print('result:', t.result())
-    
-    print('main: done')
+            print("result:", t.result())
+
+    print("main: done")
 
 
 def patch():
@@ -223,18 +222,18 @@ def patch():
         except:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+
         if debug:
             loop.set_debug(True)
-            logging.getLogger('asyncio').setLevel(logging.DEBUG)
-            warnings.filterwarnings('always')
+            logging.getLogger("asyncio").setLevel(logging.DEBUG)
+            warnings.filterwarnings("always")
         else:
             loop.set_debug(False)
-            logging.getLogger('asyncio').setLevel(logging.WARNING)
-            warnings.filterwarnings('default')
-            
+            logging.getLogger("asyncio").setLevel(logging.WARNING)
+            warnings.filterwarnings("default")
+
         return loop.run_until_complete(task)
-        
+
     version = sys.version_info.major * 10 + sys.version_info.minor
     if version < 37:
         asyncio.get_running_loop = get_event_loop
@@ -242,6 +241,6 @@ def patch():
         asyncio.run = run
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     patch()
     asyncio.run(main(), debug=True)
