@@ -113,7 +113,7 @@ class BasicMessageBus(MessageBus):
         if self.conn:
             return {
                 "status": "connected",
-                "iisteners": len(self.listeners),
+                "listeners": len(self.listeners),
                 "channels": list(self.get_channels()),
                 "timestamp": ts(),
             }
@@ -140,13 +140,15 @@ async def main():
                 await ps.send(k, n)
 
         await ps.close()
-        print("talk: done")
+
+        return "talk: done"
 
     async def listen(k):
         await asyncio.sleep(1.5)
         async for x in ps.listen(k):
             print(f"listen({k}):", x)
-        print(f"listen {k}: done")
+
+        return f"listen {k}: done"
 
     async def mon():
         for _ in range(5):
@@ -154,9 +156,7 @@ async def main():
             s = await ps.status()
             print("mon status:", s)
 
-        print("mon: done")
-
-        return True
+        return "mon: done"
 
     async def bridge(pattern, bus):
         tunnel_config = {
@@ -164,7 +164,7 @@ async def main():
             "remote_bind_address": ("127.0.0.1", 6379),
             "local_bind_address": ("127.0.0.1",),
             "ssh_username": "rnee",
-            "ssh_pkey": os.path.expanduser(r"~/.ssh/id_rsa"),
+            "ssh_pkey": os.path.expanduser(r"~/.ssh/id_rxsa"),
         }
 
         with SSHTunnelForwarder(**tunnel_config) as tunnel:
@@ -175,7 +175,9 @@ async def main():
             print("redis connected", aredis.address)
 
             try:
+                print("subscribing")
                 chan, = await aredis.psubscribe(pattern)
+                print("subscribed")
                 while await chan.wait_message():
                     k, v = await chan.get(encoding="utf-8")
                     await bus.send(k.decode(), v)
@@ -191,7 +193,7 @@ async def main():
                 aredis.close()
                 await aredis.wait_closed()
 
-        print("watch done:", pattern)
+        return "watch done:", pattern
 
     aws = {
         talk(("cat.dog", "cat.pig", "cow.emu")),
@@ -205,21 +207,22 @@ async def main():
 
     print("run done:", len(done), "pending:", len(pending))
     for t in pending:
-        print("cancelling:")
+        print("cancelling:", repr(t))
         t.cancel()
         # result = await t
         # print('cancel:', result)
 
     for t in done:
         if t.exception():
-            print("exception:", t, t.exception())
+            print("exception:", t.get_name(), t.exception())
         else:
-            print("result:", t.result())
+            print("result:", t.get_name(), t.result())
+            print("result:", t)
 
     print("main: done")
 
 
 if __name__ == "__main__":
     patch.patch()
-    asyncio.run(main(), debug=True)
+    asyncio.run(main(), debug=False)
     print("all: done")
