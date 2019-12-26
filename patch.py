@@ -33,18 +33,10 @@ def patch():
         return response
 
     def get_name(self):
-        match = re.search(r"coro = <(\S)", repr(self))
-        return match
+        """ asyncio.tasks.Task.get_name """
 
-    task_init = asyncio.Task.__init__
-
-    def __init__(self, *args, **kwargs):
-        print("my init!")
-
-        task_init(*args, **kwargs)
-
-        if version < 38:
-            self.get_name = get_name
+        match = re.search(r"coro=<(\S+)", repr(self))
+        return match.group(1)
 
     if version < 37:
         asyncio.get_running_loop = asyncio.get_event_loop
@@ -53,5 +45,6 @@ def patch():
         asyncio.all_tasks = asyncio.Task.all_tasks
         asyncio.run = run
 
-        asyncio.Task.__init__ = __init__
-
+    if version < 38:
+        setattr(asyncio.tasks.Task, 'get_name', get_name)
+    
