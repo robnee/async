@@ -18,7 +18,8 @@ import patch
 
 Message = namedtuple("Message", "source, key, value")
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
+# logger = logging.getLogger()
 
 
 def ts():
@@ -140,11 +141,12 @@ class BasicMessageBus(MessageBus):
 class MessageBridge:
     """ bridge the local bus with an external bus such as redis """
 
-    def __init__(self, pattern, bus):
+    def __init__(self, pattern, tunnel_config, bus):
         self.pattern = pattern
+        self.tunnel_config = tunnel_config
         self.bus = bus
 
-    async def inbound(self, aredis):
+    async def _receiver(self, aredis):
         redis_pattern = self.pattern
         if redis_pattern.endswith('.'):
             redis_pattern += '*'
@@ -153,43 +155,36 @@ class MessageBridge:
             chan, = await aredis.psubscribe(redis_pattern)
             while await chan.wait_message():
                 k, v = await chan.get(encoding="utf-8")
-                logger.info(f"bridge {self.pattern}: incoming message {k}: {v}")
+                logger.info(f"bridge in {self.pattern}: message {k}: {v}")
                 await self.bus.send(Message("redis", k.decode(), v))
         except asyncio.CancelledError:
             logger.info(f"bridge in {self.pattern}: cancelled")
         finally:
             await aredis.punsubscribe(redis_pattern)
 
-    async def outbound(self, aredis):
+    async def _sender(self, aredis):
         """ route local messages to redis """
 
         try:
-            await aredis.publish('cat.log', f'outbound {self.pattern}')
             async for message in self.bus.listen(self.pattern):
                 if message.source != "redis":
                     logger.info(f"bridge out {self.pattern}: {message}")
                     await aredis.publish(message.key, message.value)
         except asyncio.CancelledError:
-            logger.info(f"bridge out{self.pattern}): cancelled")
+            logger.info(f"bridge out {self.pattern}: cancelled")
 
     async def start(self):
-        tunnel_config = {
-            "ssh_address_or_host": ("robnee.com", 22),
-            "remote_bind_address": ("127.0.0.1", 6379),
-            "local_bind_address": ("127.0.0.1",),
-            "ssh_username": "rnee",
-            "ssh_pkey": os.path.expanduser(r"~/.ssh/id_rsa"),
-        }
+        """ open tunnel to redis server and start sender/receiver tasks """
 
-        with SSHTunnelForwarder(**tunnel_config) as tunnel:
+        with SSHTunnelForwarder(**self.tunnel_config) as tunnel:
             address = tunnel.local_bind_address
             aredis = await aioredis.create_redis_pool(address, encoding="utf-8")
-            logger.info(f"redis connected: {aredis.address}")
+            logger.info(f"bridge connected: {aredis.address}")
 
             try:
-                x = await asyncio.gather(
-                    self.inbound(aredis),
-                    self.outbound(aredis),
+                await asyncio.gather(
+                    self._receiver(aredis),
+                    self._sender(aredis),
                 )
             except asyncio.CancelledError:
                 logger.info(f"bridge start {self.pattern}: cancelled")
@@ -228,7 +223,8 @@ async def main():
     """ main synchronous entry point """
 
     async def talk(bus, keys):
-        print(f"talk({keys}): start")
+        """ generate some test messages """
+
         for v in range(5):
             for k in keys:
                 await asyncio.sleep(0.35)
@@ -242,15 +238,24 @@ async def main():
         except asyncio.CancelledError:
             pass
 
-    async def mon():
+    async def monitor():
+        """ echo bus status every 2 sec """
+
         for n in range(6):
             await asyncio.sleep(2)
-            print("mon status:", n, await ps.status())
+            print("monitor status:", n, await ps.status())
 
     ps = BasicMessageBus()
     await ps.connect()
 
-    bridge = MessageBridge("cat.", ps)
+    tunnel_config = {
+        "ssh_address_or_host": ("robnee.com", 22),
+        "remote_bind_address": ("127.0.0.1", 6379),
+        "local_bind_address": ("127.0.0.1",),
+        "ssh_username": "rnee",
+        "ssh_pkey": os.path.expanduser(r"~/.ssh/id_rsa"),
+    }
+    bridge = MessageBridge("cat.", tunnel_config, ps)
 
     aws = (
         talk(ps, ("cat.dog", "cat.pig", "cow.emu")),
@@ -258,9 +263,8 @@ async def main():
         listen(ps, "cat."),
         listen(ps, "cat.pig"),
         bridge.start(),
-        mon(),
+        monitor(),
     )
-
     await wait_graceafully(aws, timeout=15)
 
     await ps.close()
@@ -270,5 +274,11 @@ async def main():
 
 if __name__ == "__main__":
     patch.patch()
-    asyncio.run(main(), debug=True)
+    # logger.setLevel(logging.DEBUG)
+    handler = logging.StreamHandler()
+    try:
+        logger.addHandler(handler)
+        asyncio.run(main(), debug=False)
+    finally:
+        logger.removeHandler(handler)
     print("all: done")
