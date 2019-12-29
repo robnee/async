@@ -36,7 +36,7 @@ def patch():
         """ asyncio.tasks.Task.get_name """
 
         match = re.search(r"coro=<(\S+)", repr(self))
-        return match.group(1)
+        return match.group(1).replace('.<locals>', '')
 
     if version < 37:
         asyncio.get_running_loop = asyncio.get_event_loop

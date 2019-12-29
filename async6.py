@@ -16,7 +16,7 @@ from sshtunnel import SSHTunnelForwarder
 import patch
 
 
-Message = namedtuple("Message", "key, value")
+Message = namedtuple("Message", "source, key, value")
 
 logger = logging.getLogger()
 
@@ -29,32 +29,41 @@ class RegexPattern:
     """ regex patterns """
 
     def __init__(self, pattern):
+        self.pattern = pattern
         self.regex = re.compile(pattern)
 
     def match(self, subject):
         return self.regex.fullmatch(subject)
+
+    def __str__(self):
+        return self.pattern
 
 
 class DotPattern:
     """ dot-separated path-style patterns """
 
     def __init__(self, pattern):
-        self.pattern = pattern.upper()
+        self.pattern = pattern
 
     def match(self, subject):
-        if self.pattern == subject.upper() or self.pattern in ("", "."):
+        if self.pattern.upper() == subject.upper() or self.pattern in ("", "."):
             return True
 
         prefix = self.pattern + "" if self.pattern[-1] == "." else "."
-        return subject.upper().startswith(prefix)
+        return subject.upper().startswith(prefix.upper())
+
+    def __str__(self):
+        return self.pattern
 
 
 class MessageBus:
+    """ MessageBus interface """
+
     def __init__(self):
         self._channels = {}
 
-    def set_channel(self, k, v):
-        self._channels[k] = v
+    def set_channel(self, key, value):
+        self._channels[key] = value
 
     def get_channels(self):
         return self._channels.items()
@@ -70,22 +79,23 @@ class BasicMessageBus(MessageBus):
 
     async def connect(self, address=None):
         self.conn = self
-        logger.info(f"connected ({address})")
+        logger.info(f"bus connected ({address})")
 
-    async def send(self, k, v):
+    async def send(self, message):
         if not self.conn:
-            raise RuntimeError("not connected")
+            raise RuntimeError("bus not connected")
 
-        if k.endswith("."):
+        if message.key.endswith("."):
             raise ValueError("trailing '.' in key")
-        self.set_channel(k, v)
+            
+        self.set_channel(message.key, message.value)
         for pattern, q in self.listeners:
-            if pattern.match(k):
-                await q.put(Message(k, v))
+            if pattern.match(message.key):
+                await q.put(message)
 
     async def listen(self, pattern):
         if not self.conn:
-            raise RuntimeError("not connected")
+            raise RuntimeError("bus not connected")
 
         try:
             p = DotPattern(pattern)
@@ -96,7 +106,7 @@ class BasicMessageBus(MessageBus):
             # yield current values
             for k, v in self.get_channels():
                 if p.match(k):
-                    yield Message(k, v)
+                    yield Message("local", k, v)
 
             # yield the messages as they come through
             while True:
@@ -113,7 +123,7 @@ class BasicMessageBus(MessageBus):
         if self.conn:
             return {
                 "status": "connected",
-                "listeners": len(self.listeners),
+                "listeners": [str(p) for p, _ in self.listeners],
                 "channels": list(self.get_channels()),
                 "timestamp": ts(),
             }
@@ -127,102 +137,149 @@ class BasicMessageBus(MessageBus):
         logger.info(f"connection closed")
 
 
+class MessageBridge():
+    """ bridge the local bus with an external bus such as redis """
+
+    def __init__(self, pattern, bus):
+        self.pattern = pattern
+        self.bus = bus
+
+    async def inbound(self, aredis):
+        try:
+            redis_pattern = self.pattern
+            if redis_pattern.endswith('.'):
+                redis_pattern += '*'
+            chan, = await aredis.psubscribe(redis_pattern)
+            while await chan.wait_message():
+                k, v = await chan.get(encoding="utf-8")
+                print(f"bridge {self.pattern}: incoming message {k}: {v}")
+                await self.bus.send(Message("redis", k.decode(), v))
+
+            print(f"bridge {self.pattern}: done")
+        except asyncio.CancelledError:
+            print(f"bridge {self.pattern}: cancelled")
+        except Exception as e:
+            print(f"bridge {self.pattern}: exception", type(e), e)
+        finally:
+            await aredis.punsubscribe(redis_pattern)
+
+        return f"bridge {self.pattern}: done"
+
+    async def outbound(self, aredis):
+        """ route locl messages to redis """
+
+        try:
+            await aredis.publish('cat.log', f'outbound {self.pattern}')
+            async for message in self.bus.listen(self.pattern):
+                print(f"outbound({self.pattern}):", message)
+                if message.source != "redis":
+                    x = await aredis.publish(message.key, message.value)
+                    print("outbound published", x)
+        except asyncio.CancelledError:
+            print(f"outbound({self.pattern}): cancelled")
+
+        return f"listen({self.pattern}): done"
+
+    async def start(self):
+        tunnel_config = {
+            "ssh_address_or_host": ("robnee.com", 22),
+            "remote_bind_address": ("127.0.0.1", 6379),
+            "local_bind_address": ("127.0.0.1",),
+            "ssh_username": "rnee",
+            "ssh_pkey": os.path.expanduser(r"~/.ssh/id_rsa"),
+        }
+
+        with SSHTunnelForwarder(**tunnel_config) as tunnel:
+            address = tunnel.local_bind_address
+            aredis = await aioredis.create_redis_pool(address, encoding="utf-8")
+            print("redis connected", aredis.address)
+
+            try:
+                x = await asyncio.gather(
+                    self.inbound(aredis),
+                    self.outbound(aredis),
+                )
+                print('gather returns:', x)
+            except Exception as e:
+                print(f'gather exception: {e}')
+
+            aredis.close()
+            await aredis.wait_closed()
+
+        return f"bridge {self.pattern}: done"
+
+
 async def main():
     """ main synchronous entry point """
 
-    ps = BasicMessageBus()
-    await ps.connect()
-
-    async def talk(keys):
-        for n in range(5):
+    async def talk(ps, keys):
+        print(f"talk({keys}): start")
+        for v in range(5):
             for k in keys:
                 await asyncio.sleep(0.35)
-                await ps.send(k, n)
+                print('send:')
+                await ps.send(Message("local", k, v))
 
-        await ps.close()
+        return f"talk({keys}): done"
 
-        return "talk: done"
-
-    async def listen(k):
+    async def listen(ps, pattern):
         await asyncio.sleep(1.5)
-        async for x in ps.listen(k):
-            print(f"listen({k}):", x)
+        try:
+            async for x in ps.listen(pattern):
+                print(f"listen({pattern}):", x)
+        except asyncio.CancelledError:
+            print(f"listen({pattern}): cancelled")
 
-        return f"listen {k}: done"
+        return f"listen({pattern}): done"
 
     async def mon():
-        for _ in range(5):
+        for _ in range(6):
             await asyncio.sleep(1)
             s = await ps.status()
             print("mon status:", s)
 
         return "mon: done"
 
-    async def bridge(pattern, bus):
-        tunnel_config = {
-            "ssh_address_or_host": ("robnee.com", 22),
-            "remote_bind_address": ("127.0.0.1", 6379),
-            "local_bind_address": ("127.0.0.1",),
-            "ssh_username": "rnee",
-            "ssh_pkey": os.path.expanduser(r"~/.ssh/id_rxsa"),
-        }
+    ps = BasicMessageBus()
+    await ps.connect()
 
-        with SSHTunnelForwarder(**tunnel_config) as tunnel:
-            address = tunnel.local_bind_address
-            print("redis connecting", address)
-            aredis = await aioredis.create_redis(address, encoding="utf-8")
-
-            print("redis connected", aredis.address)
-
-            try:
-                print("subscribing")
-                chan, = await aredis.psubscribe(pattern)
-                print("subscribed")
-                while await chan.wait_message():
-                    k, v = await chan.get(encoding="utf-8")
-                    await bus.send(k.decode(), v)
-
-                print("watch: done")
-            except asyncio.CancelledError:
-                print("watch cancelled:", pattern)
-            except Exception as e:
-                print("exception:", type(e), e)
-            finally:
-                print("watch finally")
-
-                aredis.close()
-                await aredis.wait_closed()
-
-        return "watch done:", pattern
+    bridge = MessageBridge("cat.", ps)
 
     aws = {
-        talk(("cat.dog", "cat.pig", "cow.emu")),
-        listen("."),
-        listen("cat."),
-        listen("cat.pig"),
-        bridge("cat.*", ps),
+        talk(ps, ("cat.dog", "cat.pig", "cow.emu")),
+        listen(ps, "."),
+        listen(ps, "cat."),
+        listen(ps, "cat.pig"),
+        bridge.start(),
         mon(),
     }
-    done, pending = await asyncio.wait(aws, timeout=15)
 
-    print("run done:", len(done), "pending:", len(pending))
-    for t in pending:
-        print("cancelling:", repr(t))
-        t.cancel()
-        # result = await t
-        # print('cancel:', result)
+    # wait for tasks to complete issuing cancels to any still pending until done
+    # to ensure exceptions and results are always consumed
+    while True:
+        done, pending = await asyncio.wait(aws, timeout=15)
+        print("run done:", len(done), "pending:", len(pending))
+        
+        for t in done:
+            if t.exception():
+                print("exception:", t.get_name(), t.exception())
+            else:
+                print("result:", t.get_name(), t.result())
 
-    for t in done:
-        if t.exception():
-            print("exception:", t.get_name(), t.exception())
-        else:
-            print("result:", t.get_name(), t.result())
-            print("result:", t)
+        if not pending:
+            break
 
+        for t in pending:
+            t.cancel()
+
+        aws = pending
+
+    await ps.close()
+    
     print("main: done")
 
 
 if __name__ == "__main__":
     patch.patch()
-    asyncio.run(main(), debug=False)
+    asyncio.run(main(), debug=True)
     print("all: done")
