@@ -137,7 +137,7 @@ class BasicMessageBus(MessageBus):
         logger.info(f"connection closed")
 
 
-class MessageBridge():
+class MessageBridge:
     """ bridge the local bus with an external bus such as redis """
 
     def __init__(self, pattern, bus):
@@ -145,40 +145,32 @@ class MessageBridge():
         self.bus = bus
 
     async def inbound(self, aredis):
+        redis_pattern = self.pattern
+        if redis_pattern.endswith('.'):
+            redis_pattern += '*'
+
         try:
-            redis_pattern = self.pattern
-            if redis_pattern.endswith('.'):
-                redis_pattern += '*'
             chan, = await aredis.psubscribe(redis_pattern)
             while await chan.wait_message():
                 k, v = await chan.get(encoding="utf-8")
-                print(f"bridge {self.pattern}: incoming message {k}: {v}")
+                logger.info(f"bridge {self.pattern}: incoming message {k}: {v}")
                 await self.bus.send(Message("redis", k.decode(), v))
-
-            print(f"bridge {self.pattern}: done")
         except asyncio.CancelledError:
-            print(f"bridge {self.pattern}: cancelled")
-        except Exception as e:
-            print(f"bridge {self.pattern}: exception", type(e), e)
+            logger.info(f"bridge in {self.pattern}: cancelled")
         finally:
             await aredis.punsubscribe(redis_pattern)
 
-        return f"bridge {self.pattern}: done"
-
     async def outbound(self, aredis):
-        """ route locl messages to redis """
+        """ route local messages to redis """
 
         try:
             await aredis.publish('cat.log', f'outbound {self.pattern}')
             async for message in self.bus.listen(self.pattern):
-                print(f"outbound({self.pattern}):", message)
                 if message.source != "redis":
-                    x = await aredis.publish(message.key, message.value)
-                    print("outbound published", x)
+                    logger.info(f"bridge out {self.pattern}: {message}")
+                    await aredis.publish(message.key, message.value)
         except asyncio.CancelledError:
-            print(f"outbound({self.pattern}): cancelled")
-
-        return f"listen({self.pattern}): done"
+            logger.info(f"bridge out{self.pattern}): cancelled")
 
     async def start(self):
         tunnel_config = {
@@ -192,79 +184,36 @@ class MessageBridge():
         with SSHTunnelForwarder(**tunnel_config) as tunnel:
             address = tunnel.local_bind_address
             aredis = await aioredis.create_redis_pool(address, encoding="utf-8")
-            print("redis connected", aredis.address)
+            logger.info(f"redis connected: {aredis.address}")
 
             try:
                 x = await asyncio.gather(
                     self.inbound(aredis),
                     self.outbound(aredis),
                 )
-                print('gather returns:', x)
+            except asyncio.CancelledError:
+                logger.info(f"bridge start {self.pattern}: cancelled")
             except Exception as e:
-                print(f'gather exception: {e}')
+                logger.info(f'bridge start {self.pattern}: exception {e} {type(e)}')
 
             aredis.close()
             await aredis.wait_closed()
 
-        return f"bridge {self.pattern}: done"
 
+async def wait_graceafully(aws, timeout=None):
+    """
+    wait for tasks to complete issuing cancels to any still pending until done
+    to ensure exceptions and results are always consumed
+    """
 
-async def main():
-    """ main synchronous entry point """
-
-    async def talk(ps, keys):
-        print(f"talk({keys}): start")
-        for v in range(5):
-            for k in keys:
-                await asyncio.sleep(0.35)
-                print('send:')
-                await ps.send(Message("local", k, v))
-
-        return f"talk({keys}): done"
-
-    async def listen(ps, pattern):
-        await asyncio.sleep(1.5)
-        try:
-            async for x in ps.listen(pattern):
-                print(f"listen({pattern}):", x)
-        except asyncio.CancelledError:
-            print(f"listen({pattern}): cancelled")
-
-        return f"listen({pattern}): done"
-
-    async def mon():
-        for _ in range(6):
-            await asyncio.sleep(1)
-            s = await ps.status()
-            print("mon status:", s)
-
-        return "mon: done"
-
-    ps = BasicMessageBus()
-    await ps.connect()
-
-    bridge = MessageBridge("cat.", ps)
-
-    aws = {
-        talk(ps, ("cat.dog", "cat.pig", "cow.emu")),
-        listen(ps, "."),
-        listen(ps, "cat."),
-        listen(ps, "cat.pig"),
-        bridge.start(),
-        mon(),
-    }
-
-    # wait for tasks to complete issuing cancels to any still pending until done
-    # to ensure exceptions and results are always consumed
     while True:
         done, pending = await asyncio.wait(aws, timeout=15)
-        print("run done:", len(done), "pending:", len(pending))
-        
+
         for t in done:
             if t.exception():
-                print("exception:", t.get_name(), t.exception())
-            else:
-                print("result:", t.get_name(), t.result())
+                print("exception:", patch.task_get_name(t), t.exception())
+            elif t.result():
+                print("result:", patch.task_get_name(t), t.result())
 
         if not pending:
             break
@@ -273,6 +222,46 @@ async def main():
             t.cancel()
 
         aws = pending
+
+
+async def main():
+    """ main synchronous entry point """
+
+    async def talk(bus, keys):
+        print(f"talk({keys}): start")
+        for v in range(5):
+            for k in keys:
+                await asyncio.sleep(0.35)
+                await bus.send(Message("local", k, v))
+
+    async def listen(bus, pattern):
+        await asyncio.sleep(1.5)
+        try:
+            async for x in bus.listen(pattern):
+                print(f"listen({pattern}):", x)
+        except asyncio.CancelledError:
+            pass
+
+    async def mon():
+        for n in range(6):
+            await asyncio.sleep(2)
+            print("mon status:", n, await ps.status())
+
+    ps = BasicMessageBus()
+    await ps.connect()
+
+    bridge = MessageBridge("cat.", ps)
+
+    aws = (
+        talk(ps, ("cat.dog", "cat.pig", "cow.emu")),
+        listen(ps, "."),
+        listen(ps, "cat."),
+        listen(ps, "cat.pig"),
+        bridge.start(),
+        mon(),
+    )
+
+    await wait_graceafully(aws, timeout=15)
 
     await ps.close()
     
